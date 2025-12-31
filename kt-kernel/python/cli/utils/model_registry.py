@@ -149,6 +149,29 @@ BUILTIN_MODELS: list[ModelInfo] = [
         description_zh="MiniMax M2.1 MoE 模型（增强多语言编程能力）",
         max_tensor_parallel_size=4,  # M2.1 only supports up to 4-way tensor parallelism
     ),
+    ModelInfo(
+        name="GLM-4.7",
+        hf_repo="THUDM/GLM-4.7",
+        aliases=["glm-4.7", "glm4.7", "glm47", "glm-4-moe", "glm4moe"],
+        type="moe",
+        default_params={
+            "kt-method": "AMXINT4",
+            "kt-gpu-prefill-token-threshold": 4096,
+            # Use triton backend to avoid FlashInfer merge_state issues on newer GPUs
+            "attention-backend": "triton",
+            "max-total-tokens": 100000,
+            "max-running-requests": 16,
+            "chunked-prefill-size": 4096,
+            "mem-fraction-static": 0.92,
+            "watchdog-timeout": 3000,
+            "served-model-name": "GLM-4.7",
+            "tool-call-parser": "glm47",
+            "reasoning-parser": "glm45",
+        },
+        description="GLM-4.7 MoE model",
+        description_zh="GLM-4.7 MoE 模型",
+        max_tensor_parallel_size=1,  # GLM-4.7 recommended to use single GPU with kt-kernel
+    ),
 ]
 
 
@@ -388,6 +411,26 @@ def compute_minimax_m2_gpu_experts(tensor_parallel_size: int, vram_per_gpu_gb: f
     return total_vram // 1
 
 
+def compute_glm47_gpu_experts(tensor_parallel_size: int, vram_per_gpu_gb: float) -> int:
+    """Compute kt-num-gpu-experts for GLM-4.7.
+    
+    GLM-4.7 model specifics:
+    - 161 routed experts per layer
+    - ~43GB model size with bfloat16
+    - Similar structure to DeepSeek-V3 but smaller
+    """
+    # GLM-4.7 requires ~43GB for model weights
+    # Each expert consumes approximately 0.3GB VRAM
+    per_gpu_gb = 12  # Base VRAM needed for model
+    if vram_per_gpu_gb < per_gpu_gb:
+        return int(0)
+    available_vram = int(tensor_parallel_size * (vram_per_gpu_gb - per_gpu_gb))
+    
+    # Each GPU expert uses roughly 0.5GB
+    # Compute number of experts that can fit
+    return max(1, available_vram // 2)
+
+
 # Model name to computation function mapping
 MODEL_COMPUTE_FUNCTIONS: dict[str, Callable[[int, float], int]] = {
     "DeepSeek-V3-0324": compute_deepseek_v3_gpu_experts,
@@ -396,4 +439,6 @@ MODEL_COMPUTE_FUNCTIONS: dict[str, Callable[[int, float], int]] = {
     "Kimi-K2-Thinking": compute_kimi_k2_thinking_gpu_experts,
     "MiniMax-M2": compute_minimax_m2_gpu_experts,
     "MiniMax-M2.1": compute_minimax_m2_gpu_experts,  # Same as M2
+    "GLM-4.7": compute_glm47_gpu_experts,
 }
+
